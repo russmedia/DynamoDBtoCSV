@@ -15,4 +15,5 @@ where:
 - v - the expression for filtering on the primary key
 - lambdaARN - name of Lambda to be invoked
 - size - when to flush data before scanning next part from DynamoDB
+- lastKey - last DynamoDB logged id, used to start from specific position, if missing, starting from begining
 - batch - maximum size of batch with IDs to be sent to Lambda
