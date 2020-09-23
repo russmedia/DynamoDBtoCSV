@@ -25,6 +25,9 @@ program
   .option("-p, --profile [profile]", "Use profile from your credentials file")
   .option("-m, --mfa [mfacode]", "Add an MFA code to access profiles that require mfa.")
   .option("-f, --file [file]", "Name of the file to be created")
+  .option("-l, --lambdaARN [lambdaARN]", "Arn of the lambda to be invoked with every message")
+  .option("-lk, --lastKey [lastKey]", "String key of last message from scan, used to start scanning from specific place")
+  .option("-batch, --batch [batch]", "Batch max size of records to be sent", 100)
   .option(
     "-ec --envcreds",
     "Load AWS Credentials using AWS Credential Provider Chain"
@@ -38,7 +41,7 @@ if (!program.table) {
   process.exit(1);
 }
 
-if (program.region && AWS.config.credentials) {
+if (program.region) {
   AWS.config.update({ region: program.region });
 } else {
   AWS.config.loadFromPath(__dirname + "/config.json");
@@ -80,6 +83,7 @@ if (program.mfa && program.profile) {
 }
 
 const dynamoDB = new AWS.DynamoDB();
+const lambda = new AWS.Lambda();
 
 const query = {
   TableName: program.table,
@@ -211,16 +215,11 @@ const queryDynamoDB = (params) => {
 };
 
 const unparseData = (lastEvaluatedKey) => {
-  var endData = Papa.unparse({
-    fields: [...headers],
-    data: unMarshalledArray
-  });
-  if (writeCount > 0) {
-    // remove column names after first write chunk.
-    endData = endData.replace(/(.*\r\n)/, "");;
-  }
   if (program.file) {
-    writeData(endData);
+    // writeData(endData);
+    console.log('file parameter NOT SUPPORTED ANYMORE');
+  } else if (program.lambdaARN) {
+    invokeLambda(unMarshalledArray);
   } else {
     console.log(endData);
   }
@@ -242,29 +241,52 @@ const unMarshalIntoArray = (items) => {
   if (items.length === 0) return;
 
   items.forEach(function (row) {
-    let newRow = {};
-
-    // console.log( 'Row: ' + JSON.stringify( row ));
-    Object.keys(row).forEach(function (key) {
-      if (headers.indexOf(key.trim()) === -1) {
-        // console.log( 'putting new key ' + key.trim() + ' into headers ' + headers.toString());
-        headers.push(key.trim());
+    let newRow = {
+      eventName: 'MODIFY',
+      dynamodb: {
+        NewImage: {
+          conversationId: {
+            S: row['conversationId']['S']
+          }
+        }
       }
-      let newValue = unmarshal(row[key]);
-
-      if (typeof newValue === "object") {
-        newRow[key] = JSON.stringify(newValue);
-      } else {
-        newRow[key] = newValue;
-      }
-    });
-
-    // console.log( newRow );
+    };
     unMarshalledArray.push(newRow);
     rowCount++;
   });
 }
 
+if (program.lastKey) {
+  console.log(`Starting from ExclusiveStartKey = '${program.lastKey}'`);
+  scanQuery.ExclusiveStartKey = {
+    conversationId: { S: program.lastKey }
+  }
+}
+
 if (program.describe) describeTable(scanQuery);
 if (program.keyExpression) queryDynamoDB({ "query": query, stats: {} });
 else scanDynamoDB(scanQuery);
+
+/**
+ * Lambda invoke part
+ */
+const invokeLambda = (messages) => {
+  console.log(`Invoke lamdba with messages: ${messages.length}`)
+  let chunk = Number(program.batch);
+  let i,j,temparray;
+  for (i=0,j=messages.length; i<j; i+=chunk) {
+      temparray = messages.slice(i,i+chunk);
+      // do whatever
+      console.log(`Sending chunk ${temparray.length}`)
+      let params = {
+        FunctionName: program.lambdaARN,
+        InvocationType: "Event",
+        Payload: JSON.stringify({
+          Records: temparray
+        })
+      };
+      lambda.invoke(params, function(err, data) {
+        if (err) console.log(err, err.stack); // an error occurred
+      });
+  }
+}
